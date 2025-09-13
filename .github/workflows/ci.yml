@@ -1,0 +1,134 @@
+name: CI/CD Pipeline
+
+# Запуск workflow при push и pull request
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+# Разрешения для GitHub Actions
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # Job для тестирования на разных версиях Node.js
+  test:
+    name: Test на Node.js ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+    
+    steps:
+    - name: Checkout код
+      uses: actions/checkout@v4
+    
+    - name: Установка Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Установка зависимостей
+      run: npm ci
+    
+    - name: Запуск линтера
+      run: npm run lint
+    
+    - name: Запуск тестов
+      run: npm run test:coverage
+    
+    - name: Загрузка coverage отчета в Codecov
+      uses: codecov/codecov-action@v3
+      if: matrix.node-version == '20.x'
+      with:
+        file: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+
+  # Job для проверки безопасности
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout код
+      uses: actions/checkout@v4
+    
+    - name: Установка Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: Установка зависимостей
+      run: npm ci
+    
+    - name: Audit зависимостей
+      run: npm audit --audit-level moderate
+
+  # Job для сборки и проверки
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    
+    steps:
+    - name: Checkout код
+      uses: actions/checkout@v4
+    
+    - name: Установка Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+    
+    - name: Установка зависимостей
+      run: npm ci
+    
+    - name: Проверка запуска приложения
+      run: |
+        npm start &
+        APP_PID=$!
+        sleep 5
+        curl -f http://localhost:3000/health || exit 1
+        kill $APP_PID
+    
+    - name: Создание артефакта
+      run: |
+        mkdir -p dist
+        cp package.json dist/
+        cp index.js dist/
+    
+    - name: Загрузка артефактов
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-build
+        path: dist/
+        retention-days: 30
+
+  # Job для развертывания (только на main ветке)
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: staging
+    
+    steps:
+    - name: Скачивание артефактов
+      uses: actions/download-artifact@v4
+      with:
+        name: app-build
+        path: dist/
+    
+    - name: Имитация развертывания
+      run: |
+        echo "🚀 Развертывание на staging окружение..."
+        echo "📦 Файлы для развертывания:"
+        ls -la dist/
+        echo "✅ Развертывание завершено успешно!"
